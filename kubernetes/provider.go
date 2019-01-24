@@ -2,13 +2,14 @@ package kubernetes
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 
 	"github.com/hashicorp/terraform/helper/schema"
 	"github.com/hashicorp/terraform/terraform"
-	"github.com/mitchellh/go-homedir"
+	homedir "github.com/mitchellh/go-homedir"
 	kubernetes "k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	restclient "k8s.io/client-go/rest"
@@ -101,6 +102,24 @@ func Provider() terraform.ResourceProvider {
 				DefaultFunc: schema.EnvDefaultFunc("KUBE_LOAD_CONFIG_FILE", true),
 				Description: "Load local kubeconfig.",
 			},
+			"auth_command": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				DefaultFunc: schema.EnvDefaultFunc("KUBE_AUTH_COMMAND", true),
+				Description: "Exec auth command.",
+			},
+			"auth_arguments": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				DefaultFunc: schema.EnvDefaultFunc("KUBE_AUTH_ARGUMENTS", true),
+				Description: "Arguments to pass to exec command.",
+			},
+			"auth_environment": {
+				Type:        schema.TypeMap,
+				Optional:    true,
+				DefaultFunc: schema.EnvDefaultFunc("KUBE_AUTH_ENVIRONMENT", true),
+				Description: "Environment variables to launch exec command with.",
+			},
 		},
 
 		DataSourcesMap: map[string]*schema.Resource{
@@ -140,6 +159,7 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 
 	var cfg *restclient.Config
 	var err error
+
 	if d.Get("load_config_file").(bool) {
 		// Config file loading
 		cfg, err = tryLoadingConfigFile(d)
@@ -150,6 +170,31 @@ func providerConfigure(d *schema.ResourceData) (interface{}, error) {
 	}
 	if cfg == nil {
 		cfg = &restclient.Config{}
+	}
+
+	if d.Get("auth_command").(string) != "" {
+		env := []clientcmdapi.ExecEnvVar{}
+		for k, v := range d.Get("auth_environment").(map[string]interface{}) {
+			vs, ok := v.(string)
+			if !ok {
+				return nil, fmt.Errorf("Environment var %s was not string", k)
+			}
+			env = append(env, clientcmdapi.ExecEnvVar{Name: k, Value: vs})
+		}
+		args := []string{}
+		for _, v := range d.Get("auth_arguments").([]interface{}) {
+			vs, ok := v.(string)
+			if !ok {
+				return nil, errors.New("Only string arguments supported")
+			}
+			args = append(args, vs)
+		}
+		cfg.ExecProvider = &clientcmdapi.ExecConfig{
+			Command:    d.Get("auth_command").(string),
+			Args:       args,
+			Env:        env,
+			APIVersion: "client.authentication.k8s.io/v1beta1",
+		}
 	}
 
 	// Overriding with static configuration
